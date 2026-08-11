@@ -1002,6 +1002,16 @@ async function handleUpdate(u: any) {
       saveState(STATE_PATH, state);
     }
     handleText(chat_id, m.message_thread_id, withReplyContext(cmd.text, m), isPrivate, u.update_id, m.message_id);
+  } else if (cmd.kind === "text") {
+    // Text sent outside any topic (the "All"/General area). The router only
+    // handles messages inside a topic, so nudge the user instead of silently
+    // ignoring it (which looks like the bot is dead).
+    await tg
+      .sendMessage(
+        chat_id,
+        "✍️ Похоже, это общий чат, а не тема. Я отвечаю только внутри топика — создай тему (или открой существующую) и напиши там.",
+      )
+      .catch(() => {});
   }
 }
 
