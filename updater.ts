@@ -7,7 +7,7 @@ import { mkdirSync, writeFileSync, readdirSync, cpSync, rmSync } from "fs";
 import { join } from "path";
 import { AGENT_VERSION } from "./version";
 
-const REPO = "Dinometeu/tcr-agent";
+const REPO = "dinometeu-dev/tcr-agent";
 const VERSION_URL = `https://raw.githubusercontent.com/${REPO}/main/VERSION`;
 const TARBALL_URL = `https://codeload.github.com/${REPO}/tar.gz/refs/heads/main`;
 const APP_DIR = import.meta.dir; // where the running router lives
