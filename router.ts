@@ -621,6 +621,10 @@ function handleText(
         } finally {
           clearInterval(refresher);
           if (pendingRefresh) clearTimeout(pendingRefresh);
+          // Wipe the compose-box draft immediately (instead of waiting ~30s for it
+          // to auto-expire), so the user's input box frees at once and their next
+          // message doesn't get stuck "sending".
+          tg.sendRichMessageDraft(chat_id, draftId, { markdown: "" }, thread).catch(() => {});
         }
         if (!slot.session_id) {
           slot.session_id = session_id;
