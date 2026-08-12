@@ -17,6 +17,8 @@ export type Config = {
   relayCert?: string; // path to the relay's pinned cert PEM (relay mode, self-signed)
   agentId?: string; // stable agent identity for the relay (relay mode)
   agentSecret?: string; // pinned secret for the relay (relay mode)
+  voiceModel?: string; // whisper model for voice transcription (default "small")
+  voiceLang?: string; // force a language for transcription (default "ru"; "" = auto-detect)
 };
 
 export function loadConfig(path: string = CONFIG_PATH): Config {
@@ -35,6 +37,8 @@ export function loadConfig(path: string = CONFIG_PATH): Config {
     relayCert: r.relayCert ? String(r.relayCert) : undefined,
     agentId: r.agentId ? String(r.agentId) : undefined,
     agentSecret: r.agentSecret ? String(r.agentSecret) : undefined,
+    voiceModel: r.voiceModel ? String(r.voiceModel) : undefined,
+    voiceLang: typeof r.voiceLang === "string" ? r.voiceLang : undefined,
   };
 }
 

@@ -21,6 +21,7 @@ import { stripHtml } from "./activity";
 import { isAllowed, activationResult, genCode, type PendingCode } from "./auth";
 import { connectRelay, type RelayClient } from "./relay-client";
 import { startUpdater } from "./updater";
+import { transcribe, voiceAvailable } from "./transcribe";
 
 const CONFIG = loadConfig();
 const DEFAULT_CWD = CONFIG.defaultCwd;
@@ -35,7 +36,7 @@ function expandCwd(p: string | null): string {
 let relay: RelayClient | undefined; // set at startup in relay mode
 const tg =
   CONFIG.mode === "relay"
-    ? new Telegram("", (m, p) => relay!.transport(m, p)) // tunnel Bot API calls over the relay
+    ? new Telegram("", (m, p) => relay!.transport(m, p), (fp) => relay!.fetchFile(fp)) // tunnel API + file downloads over the relay
     : new Telegram(CONFIG.token);
 const state: State = loadState(STATE_PATH);
 const queues = new Map<number, Promise<void>>(); // per-topic serial chain
@@ -420,9 +421,8 @@ async function fetchTelegramImage(fileId: string): Promise<{ data: string; media
   try {
     const f: any = await tg.getFile(fileId);
     if (!f?.file_path) return null;
-    const res = await fetch(tg.fileLink(f.file_path));
-    if (!res.ok) return null;
-    const buf = Buffer.from(await res.arrayBuffer());
+    const buf = await tg.downloadFile(f.file_path); // relay-aware (token lives on the relay)
+    if (!buf) return null;
     const ext = (f.file_path.split(".").pop() || "").toLowerCase();
     const media_type =
       ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : ext === "gif" ? "image/gif" : "image/jpeg";
@@ -462,6 +462,49 @@ async function handleImage(
     { type: "image", source: { type: "base64", media_type: img.media_type, data: img.data } },
   ];
   handleText(chat_id, thread, content, true, undefined, m.message_id);
+}
+
+// A voice note / round video / audio file → transcribe locally (whisper) and run
+// the transcript as a normal text turn. Unlike images this isn't private-only:
+// after transcription it's just text, so it works in any managed topic.
+async function handleVoice(chat_id: number, thread: number, m: any, fileId: string): Promise<void> {
+  const key = String(thread);
+  if (!state.topics[key]) {
+    state.topics[key] = { session_id: null, cwd: DEFAULT_CWD, name: `topic ${thread}` };
+    saveState(STATE_PATH, state);
+  }
+  if (!voiceAvailable()) {
+    await tg
+      .sendMessage(chat_id, "🎤 Голосовые пока не настроены на этом компьютере (нет whisper).", thread)
+      .catch(() => {});
+    return;
+  }
+  // A morphing status note: "Расшифровываю…" → the transcript, so the user can
+  // see (and catch mistakes in) what was actually heard.
+  let noteId: number | undefined;
+  try {
+    const note: any = await tg.sendMessage(chat_id, "🎤 Расшифровываю…", thread);
+    noteId = note?.message_id;
+  } catch {
+    /* non-fatal — proceed without a status note */
+  }
+  let text: string | null = null;
+  try {
+    const f: any = await tg.getFile(fileId);
+    const buf = f?.file_path ? await tg.downloadFile(f.file_path) : null;
+    if (buf) text = await transcribe(buf, { model: CONFIG.voiceModel, lang: CONFIG.voiceLang });
+  } catch (e) {
+    console.error("voice:", e instanceof Error ? e.message : e);
+  }
+  if (!text) {
+    const msg = "⚠️ Не смог распознать голосовое.";
+    if (noteId) await tg.editText(chat_id, noteId, msg).catch(() => {});
+    else await tg.sendMessage(chat_id, msg, thread).catch(() => {});
+    return;
+  }
+  if (noteId) await tg.editText(chat_id, noteId, `🎤 «${text}»`).catch(() => {});
+  else await tg.sendMessage(chat_id, `🎤 «${text}»`, thread).catch(() => {});
+  handleText(chat_id, thread, text, m.chat?.type === "private", undefined, m.message_id);
 }
 
 function handleText(
@@ -751,6 +794,13 @@ async function handleUpdate(u: any) {
       : null;
   if ((photo || imgDoc) && m.message_thread_id) {
     return handleImage(chat_id, m.message_thread_id, m, (photo ?? imgDoc).file_id, m.chat?.type === "private");
+  }
+
+  // Voice note / round video / audio → transcribe → text turn.
+  const audioMsg =
+    m.voice || m.video_note || (m.audio && String(m.audio.mime_type || "").startsWith("audio/") ? m.audio : null);
+  if (audioMsg?.file_id && m.message_thread_id) {
+    return handleVoice(chat_id, m.message_thread_id, m, audioMsg.file_id);
   }
 
   if (typeof m.text !== "string") return;

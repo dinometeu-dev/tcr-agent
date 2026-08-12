@@ -1,14 +1,20 @@
 // A transport performs one Bot API call. Default = direct HTTP to Telegram
 // (local mode). Relay mode injects a transport that tunnels the call over WSS.
 export type Transport = (method: string, params: Record<string, unknown>) => Promise<any>;
+// Downloads a file's bytes and returns them base64-encoded. Injected in relay mode
+// (the token lives on the relay, so the download is tunneled through it).
+export type FileFetch = (file_path: string) => Promise<string | null>;
 
 export class Telegram {
   private transport: Transport;
+  private fileFetch?: FileFetch;
   constructor(
     private token: string,
     transport?: Transport,
+    fileFetch?: FileFetch,
   ) {
     this.transport = transport ?? ((m, p) => this.directCall(m, p));
+    this.fileFetch = fileFetch;
   }
 
   private base(m: string) {
@@ -132,6 +138,11 @@ export class Telegram {
     return this.call("editMessageText", { chat_id, message_id, text: html, parse_mode: "HTML" });
   }
 
+  // Plain-text edit (no parse mode) — safe for arbitrary content like transcripts.
+  editText(chat_id: number, message_id: number, text: string) {
+    return this.call("editMessageText", { chat_id, message_id, text });
+  }
+
   deleteMessage(chat_id: number, message_id: number) {
     return this.call("deleteMessage", { chat_id, message_id });
   }
@@ -148,6 +159,19 @@ export class Telegram {
   // Direct download URL for a file_path returned by getFile.
   fileLink(file_path: string): string {
     return `https://api.telegram.org/file/bot${this.token}/${file_path}`;
+  }
+
+  // Download a file's bytes. Local mode: direct GET (token is in the URL). Relay
+  // mode: the token lives on the relay, so tunnel the download through it
+  // (fileFetch) rather than building a tokenless — and thus 404ing — URL.
+  async downloadFile(file_path: string): Promise<Buffer | null> {
+    if (this.fileFetch) {
+      const b64 = await this.fileFetch(file_path);
+      return b64 ? Buffer.from(b64, "base64") : null;
+    }
+    const res = await fetch(this.fileLink(file_path));
+    if (!res.ok) return null;
+    return Buffer.from(await res.arrayBuffer());
   }
 
   setMyCommands(commands: { command: string; description: string }[], scope?: object) {

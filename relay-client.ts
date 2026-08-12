@@ -9,6 +9,7 @@ type Pending = { resolve: (v: any) => void; reject: (e: any) => void };
 
 export type RelayClient = {
   transport: Transport;
+  fetchFile: (file_path: string) => Promise<string | null>; // base64 bytes via the relay
   registerCode: (code: string, ttlMs: number) => void;
   listAccounts: () => Promise<Array<{ id: number; name: string; at: number }>>;
   unbind: (telegramUserId: number) => void;
@@ -58,12 +59,14 @@ export function connectRelay(opts: {
         return;
       }
       if (m.t === "msg") return opts.onUpdate(m.update);
-      if (m.t === "sendResult" || m.t === "accountsResult") {
+      if (m.t === "sendResult" || m.t === "accountsResult" || m.t === "fileResult") {
         const p = pending.get(m.id);
         if (!p) return;
         pending.delete(m.id);
         if (m.error) p.reject(new Error(m.error));
-        else p.resolve(m.t === "accountsResult" ? m.accounts || [] : m.result);
+        else if (m.t === "accountsResult") p.resolve(m.accounts || []);
+        else if (m.t === "fileResult") p.resolve(m.data ?? null);
+        else p.resolve(m.result);
       }
     };
     ws.onclose = () => {
@@ -117,6 +120,8 @@ export function connectRelay(opts: {
   return {
     transport: (method, params) =>
       request({ t: "send", method, params }, 30_000, (p) => p.reject(new Error(`relay timeout: ${method}`))),
+    fetchFile: (file_path) =>
+      request({ t: "getFileData", file_path }, 30_000, (p) => p.reject(new Error("relay timeout: getFileData"))),
     registerCode: (code, ttlMs) => raw({ t: "code", code, ttlMs }),
     listAccounts: () => request({ t: "accounts" }, 5_000, (p) => p.resolve([])),
     unbind: (telegramUserId) => raw({ t: "unbind", telegramUserId }),
