@@ -190,10 +190,16 @@ const EFFORTS = ["low", "medium", "high", "xhigh"];
 // you actually have access to.
 type ModelChoice = { label: string; id: string };
 const DEFAULT_MODELS: ModelChoice[] = [
+  // Family aliases — always resolve to the newest model of that family, so a
+  // brand-new release is picked up with zero changes (future-proof).
+  { label: "Opus (последняя)", id: "opus" },
+  { label: "Sonnet (последняя)", id: "sonnet" },
+  { label: "Haiku (последняя)", id: "haiku" },
+  { label: "Fable (последняя)", id: "fable" },
+  // Concrete versions — pin a specific one.
   { label: "Opus 5", id: "claude-opus-5" },
   { label: "Opus 4.8", id: "claude-opus-4-8" },
   { label: "Sonnet 5", id: "claude-sonnet-5" },
-  { label: "Sonnet 4.5", id: "claude-sonnet-4-5" },
   { label: "Haiku 4.5", id: "claude-haiku-4-5" },
 ];
 const MODEL_CHOICES: ModelChoice[] = CONFIG.models && CONFIG.models.length ? CONFIG.models : DEFAULT_MODELS;
