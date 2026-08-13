@@ -55,9 +55,11 @@ class WarmProc {
       "--verbose",
       "--include-partial-messages", // fine-grained stream_events → tool steps + live text
       "--dangerously-skip-permissions",
-      "--strict-mcp-config",
+      // Load USER settings so the user's MCP servers, plugins, and superpowers
+      // skills are available in the bot (was project,local + strict-mcp, which
+      // gave a faster start but zero MCP). The perm-gate --settings still merges.
       "--setting-sources",
-      "project,local", // drop USER settings → no global superpowers plugin (skill-forcing preamble)
+      "user,project,local",
       "--settings",
       PERM_SETTINGS, // registers the PreToolUse permission-gate hook (loads independently)
       "--append-system-prompt",

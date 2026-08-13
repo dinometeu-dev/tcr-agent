@@ -26,9 +26,9 @@ export async function runClaude(
     "--output-format",
     "json",
     "--dangerously-skip-permissions",
-    "--strict-mcp-config", // skip loading MCP servers → faster startup
+    // Load USER settings → MCP servers + plugins + superpowers available in the bot.
     "--setting-sources",
-    "project,local", // drop USER settings → no global superpowers plugin
+    "user,project,local",
     "--settings",
     PERM_SETTINGS, // same PreToolUse gate as the warm path (was missing here)
     "--append-system-prompt",
@@ -79,7 +79,8 @@ export async function runClaudeStream(
     "--verbose",
     "--include-partial-messages",
     "--dangerously-skip-permissions",
-    "--strict-mcp-config", // skip loading MCP servers → faster startup
+    "--setting-sources",
+    "user,project,local", // load USER settings → MCP + plugins + superpowers
     "--append-system-prompt",
     TG_STYLE,
   ];
