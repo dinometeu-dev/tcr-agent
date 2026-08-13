@@ -159,9 +159,20 @@ class WarmProc {
         p.reject(new Error(String(msg)));
       } else {
         this.primed = true;
-        // `|| `, not `??`: an empty-string result falls through to streamed text
-        // (or a placeholder) — Telegram rejects an empty message.
-        p.resolve({ result: ev.result || p.acc || "(пустой ответ)", session_id: this.sessionId });
+        // `||`, not `??`: an empty-string result falls through to streamed text.
+        const text = ev.result || p.acc || "";
+        if (!text.trim()) {
+          // The model produced NO visible text (only thinking/tools/skill, a
+          // limit, or a blocked hook). Log why so the router can nudge for a
+          // final answer and we can see the real cause in router.log.
+          console.error(
+            `warm: EMPTY result thread=${this.topic} subtype=${ev.subtype ?? "?"} ` +
+              `num_turns=${ev.num_turns ?? "?"} dur_ms=${ev.duration_ms ?? "?"} ` +
+              `out_tokens=${ev.usage?.output_tokens ?? "?"} perm_denials=${(ev.permission_denials || []).length} ` +
+              `acc_len=${p.acc.length}`,
+          );
+        }
+        p.resolve({ result: text, session_id: this.sessionId });
       }
     }
   }

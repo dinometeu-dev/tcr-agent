@@ -813,6 +813,24 @@ function handleText(
               }
             },
           ));
+          // The model sometimes ends a turn having only thought / used a tool or
+          // skill, producing no visible text → a dead "(пустой ответ)". Nudge it
+          // ONCE (same session) for a final reply instead. (warm.ts logs the cause.)
+          if ((!result || !result.trim()) && !aborted.has(thread)) {
+            console.error(`router: empty answer on thread ${thread} — nudging once for a final reply`);
+            const retry = await warmSend(
+              thread,
+              slot.session_id ?? session_id,
+              slot.cwd,
+              slot.model,
+              slot.effort ?? DEFAULT_EFFORT,
+              "Ты завершил ход без текстового ответа пользователю. Дай краткий финальный ответ по итогу — только сам ответ, без преамбулы.",
+              onUpdate,
+              () => {},
+            );
+            if (retry.result && retry.result.trim()) result = retry.result;
+            if (retry.session_id) session_id = retry.session_id;
+          }
         } finally {
           clearInterval(refresher);
           if (pendingRefresh) clearTimeout(pendingRefresh);
