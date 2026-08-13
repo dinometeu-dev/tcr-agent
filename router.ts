@@ -164,7 +164,7 @@ function renderSessionsPage(list: SessRow[], page: number) {
   const rows = list.slice(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE).map((s, j) => {
     const i = p * PAGE_SIZE + j;
     const raw = state.sessionNames[s.id] ?? s.label; // user-set name wins over derived label
-    const label = clean(raw.length > 24 ? raw.slice(0, 23) + "…" : raw);
+    const label = clean(raw); // full name — let the column widen (Telegram scrolls the table on mobile)
     const mark = bound.has(s.id) ? " 📌" : "";
     const slow = s.size >= BIG_SESSION ? " 🐢" : "";
     return `| ${i + 1}${mark} | ${label} | ${clean(folder(s.cwd))} | ${relTime(s.mtime)}${slow} |`;
@@ -177,6 +177,45 @@ function renderSessionsPage(list: SessRow[], page: number) {
   btns.push({ text: `${p + 1}/${total}`, callback_data: `s:${p}` });
   if (p < total - 1) btns.push({ text: "▶", callback_data: `s:${p + 1}` });
   return { md, reply_markup: { inline_keyboard: [btns] } };
+}
+
+// Parameterized commands with a fixed set of choices (model, effort). Typing the
+// bare command shows these as tap-to-pick buttons instead of demanding an argument.
+const EFFORTS = ["low", "medium", "high", "xhigh"];
+const MODELS = ["opus", "sonnet", "haiku"];
+
+// Send a "pick a value" prompt: one inline button per option (2 per row), the
+// current value marked ✓. Tapping fires a `<prefix>:<thread>:<value>` callback.
+async function sendChoiceMenu(
+  chat_id: number,
+  thread: number,
+  title: string,
+  prefix: string,
+  options: string[],
+  current?: string,
+): Promise<void> {
+  const rows: { text: string; callback_data: string }[][] = [];
+  for (let i = 0; i < options.length; i += 2) {
+    rows.push(
+      options
+        .slice(i, i + 2)
+        .map((o) => ({ text: o === current ? `✓ ${o}` : o, callback_data: `${prefix}:${thread}:${o}` })),
+    );
+  }
+  await tg.sendRichMessage(chat_id, title, thread, { inline_keyboard: rows }).catch(() => {});
+}
+
+// Apply a model/effort choice to a topic — shared by the /command and the button.
+// Aborts any in-flight turn cleanly and drops the warm process so it takes effect
+// on the next message.
+function applyTopicSetting(t: number, key: "model" | "effort", value: string): void {
+  const slot = state.topics[String(t)];
+  if (!slot) return;
+  slot[key] = value;
+  saveState(STATE_PATH, state);
+  if (running.has(t)) aborted.add(t);
+  cancelPerms(t);
+  warmDrop(t);
 }
 
 // Handle ◀ ▶ page taps on the sessions list.
@@ -242,6 +281,28 @@ async function handleCallback(cb: any): Promise<void> {
       await pend.resolve(cm[2] as "close" | "keep"); // kills the IDE pid on "close"
     }
     await tg.answerCallback(cb.id, cm[2] === "close" ? "Закрываю на компе…" : "Ок").catch(() => {});
+    return;
+  }
+
+  // Value picker: tap on an /effort or /model button → apply to the topic + confirm.
+  const vm = /^(eff|mdl):(\d+):(.+)$/.exec(cb.data || "");
+  if (vm) {
+    const kind = vm[1]!;
+    const t = Number(vm[2]);
+    const value = vm[3]!;
+    const ok = kind === "eff" ? EFFORTS.includes(value) : MODELS.includes(value);
+    if (!ok || !state.topics[String(t)]) {
+      await tg.answerCallback(cb.id, "Не применилось — набери команду заново").catch(() => {});
+      return;
+    }
+    applyTopicSetting(t, kind === "eff" ? "effort" : "model", value);
+    const label = kind === "eff" ? `⚡ Эффорт: **${value}**` : `🧩 Модель: **${value}**`;
+    if (cb.message) {
+      await tg
+        .editRichMessage(cb.message.chat.id, cb.message.message_id, `${label} — применится со следующего сообщения ✅`)
+        .catch(() => {});
+    }
+    await tg.answerCallback(cb.id, "Готово").catch(() => {});
     return;
   }
 
@@ -926,16 +987,16 @@ async function handleUpdate(u: any) {
       await tg.sendMessage(chat_id, "Смена модели работает внутри топика-диалога.", t).catch(() => {});
       return;
     }
-    const allowed = ["opus", "sonnet", "haiku"];
-    if (!allowed.includes(cmd.name)) {
+    if (!cmd.name) {
+      // Bare /model → tap-to-pick buttons instead of requiring an argument.
+      await sendChoiceMenu(chat_id, t, "🧩 Выберите модель:", "mdl", MODELS, state.topics[String(t)]!.model ?? CONFIG.defaultModel);
+      return;
+    }
+    if (!MODELS.includes(cmd.name)) {
       await tg.sendMessage(chat_id, "Модель: /model opus | sonnet | haiku", t).catch(() => {});
       return;
     }
-    state.topics[String(t)]!.model = cmd.name;
-    saveState(STATE_PATH, state);
-    if (running.has(t)) aborted.add(t); // in-flight turn will end cleanly, not "process exited"
-    cancelPerms(t);
-    warmDrop(t);
+    applyTopicSetting(t, "model", cmd.name);
     await tg.sendMessage(chat_id, `🧩 Модель этого диалога: ${cmd.name} (применится со следующего сообщения)`, t);
   } else if (cmd.kind === "effort") {
     const t = m.message_thread_id;
@@ -943,16 +1004,16 @@ async function handleUpdate(u: any) {
       await tg.sendMessage(chat_id, "Смена эффорта работает внутри топика-диалога.", t).catch(() => {});
       return;
     }
-    const allowed = ["low", "medium", "high", "xhigh"];
-    if (!allowed.includes(cmd.level)) {
+    if (!cmd.level) {
+      // Bare /effort → tap-to-pick buttons.
+      await sendChoiceMenu(chat_id, t, "⚡ Выберите эффорт:", "eff", EFFORTS, state.topics[String(t)]!.effort ?? DEFAULT_EFFORT);
+      return;
+    }
+    if (!EFFORTS.includes(cmd.level)) {
       await tg.sendMessage(chat_id, "Эффорт: /effort low | medium | high | xhigh", t).catch(() => {});
       return;
     }
-    state.topics[String(t)]!.effort = cmd.level;
-    saveState(STATE_PATH, state);
-    if (running.has(t)) aborted.add(t); // in-flight turn ends cleanly
-    cancelPerms(t);
-    warmDrop(t);
+    applyTopicSetting(t, "effort", cmd.level);
     await tg.sendMessage(chat_id, `⚡ Эффорт этого диалога: ${cmd.level} (применится со следующего сообщения)`, t);
   } else if (cmd.kind === "status") {
     const t = m.message_thread_id;
