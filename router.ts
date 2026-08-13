@@ -22,11 +22,13 @@ import { isAllowed, activationResult, genCode, type PendingCode } from "./auth";
 import { connectRelay, type RelayClient } from "./relay-client";
 import { startUpdater } from "./updater";
 import { transcribe, voiceAvailable } from "./transcribe";
+import { combineForwards } from "./batch";
 
 const CONFIG = loadConfig();
 const DEFAULT_CWD = CONFIG.defaultCwd;
 const DEFAULT_EFFORT = CONFIG.defaultEffort || "xhigh"; // max standard effort by default
 const MAX_CONCURRENT = 5;
+const FORWARD_BATCH_MS = CONFIG.forwardBatchMs ?? 1500; // coalesce a forward burst into one request
 
 function expandCwd(p: string | null): string {
   if (!p) return DEFAULT_CWD;
@@ -48,6 +50,17 @@ const collisionWarned = new Set<number>(); // topics already warned this collisi
 let lastChatId = 0; // most recent chat, fallback target for gate prompts
 let active = 0;
 let draftSeq = 0; // unique non-zero draft ids for streaming drafts
+// Forwarding several messages arrives as a burst of separate updates; buffer them
+// per topic and run the whole burst as ONE turn once it goes quiet.
+type FwdBatch = {
+  parts: string[];
+  timer: ReturnType<typeof setTimeout> | null;
+  chat_id: number;
+  isPrivate: boolean;
+  replyTo?: number; // first message of the burst (for reply-linking)
+  lastId?: number; // last update_id (for the durable inbox record)
+};
+const fwdBatches = new Map<number, FwdBatch>(); // thread → forward burst being coalesced
 
 // Pending permission prompts (blocking gate): id → resolver + prompt message.
 type PendingPerm = {
@@ -505,6 +518,38 @@ async function handleVoice(chat_id: number, thread: number, m: any, fileId: stri
   if (noteId) await tg.editText(chat_id, noteId, `🎤 «${text}»`).catch(() => {});
   else await tg.sendMessage(chat_id, `🎤 «${text}»`, thread).catch(() => {});
   handleText(chat_id, thread, text, m.chat?.type === "private", undefined, m.message_id);
+}
+
+// Accumulate a forwarded message into its topic's burst buffer, (re)arming the
+// debounce. When the burst goes quiet for FORWARD_BATCH_MS, flushBatch runs it as
+// ONE turn. A normal message typed right after forwards folds in and flushes early.
+function addToBatch(
+  thread: number,
+  chat_id: number,
+  text: string,
+  isPrivate: boolean,
+  updateId?: number,
+  msgId?: number,
+): void {
+  let b = fwdBatches.get(thread);
+  if (!b) {
+    b = { parts: [], timer: null, chat_id, isPrivate, replyTo: msgId };
+    fwdBatches.set(thread, b);
+  }
+  b.parts.push(text);
+  b.lastId = updateId;
+  if (b.timer) clearTimeout(b.timer);
+  b.timer = setTimeout(() => flushBatch(thread), FORWARD_BATCH_MS);
+}
+
+function flushBatch(thread: number): void {
+  const b = fwdBatches.get(thread);
+  if (!b) return;
+  if (b.timer) clearTimeout(b.timer);
+  fwdBatches.delete(thread);
+  const combined = combineForwards(b.parts);
+  if (!combined) return;
+  handleText(b.chat_id, thread, combined, b.isPrivate, b.lastId, b.replyTo);
 }
 
 function handleText(
@@ -1055,7 +1100,28 @@ async function handleUpdate(u: any) {
       state.topics[key] = { session_id: null, cwd: DEFAULT_CWD, name: `topic ${m.message_thread_id}` };
       saveState(STATE_PATH, state);
     }
-    handleText(chat_id, m.message_thread_id, withReplyContext(cmd.text, m), isPrivate, u.update_id, m.message_id);
+    const text = withReplyContext(cmd.text, m);
+    // Telegram sends each forwarded message as its own update. Detect forwards
+    // (forward_origin is Bot API 7+; the legacy fields cover older servers) and
+    // coalesce the burst into one request instead of one turn per message.
+    const isForward = !!(
+      m.forward_origin ||
+      m.forward_date ||
+      m.forward_from ||
+      m.forward_from_chat ||
+      m.forward_sender_name
+    );
+    const batching = fwdBatches.has(m.message_thread_id);
+    if (isForward) {
+      addToBatch(m.message_thread_id, chat_id, text, isPrivate, u.update_id, m.message_id);
+    } else if (batching) {
+      // A normal message right after a forward burst = the user's instruction
+      // about it → fold into the batch and run it all together, now.
+      addToBatch(m.message_thread_id, chat_id, text, isPrivate, u.update_id, m.message_id);
+      flushBatch(m.message_thread_id);
+    } else {
+      handleText(chat_id, m.message_thread_id, text, isPrivate, u.update_id, m.message_id);
+    }
   } else if (cmd.kind === "text") {
     // Text sent outside any topic (the "All"/General area). The router only
     // handles messages inside a topic, so nudge the user instead of silently

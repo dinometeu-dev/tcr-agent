@@ -19,6 +19,7 @@ export type Config = {
   agentSecret?: string; // pinned secret for the relay (relay mode)
   voiceModel?: string; // whisper model for voice transcription (default "small")
   voiceLang?: string; // force a language for transcription (default "ru"; "" = auto-detect)
+  forwardBatchMs?: number; // debounce window (ms) to coalesce a forward burst into one request (default 1500)
 };
 
 export function loadConfig(path: string = CONFIG_PATH): Config {
@@ -39,6 +40,7 @@ export function loadConfig(path: string = CONFIG_PATH): Config {
     agentSecret: r.agentSecret ? String(r.agentSecret) : undefined,
     voiceModel: r.voiceModel ? String(r.voiceModel) : undefined,
     voiceLang: typeof r.voiceLang === "string" ? r.voiceLang : undefined,
+    forwardBatchMs: Number.isFinite(r.forwardBatchMs) ? Number(r.forwardBatchMs) : undefined,
   };
 }
 
