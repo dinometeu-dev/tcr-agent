@@ -1186,6 +1186,32 @@ Bun.serve({
 });
 setWarmExitHandler((t) => cancelPerms(t)); // a dying warm process cancels its pending prompt
 startUpdater(() => active === 0); // self-update from GitHub when idle (no reinstall needed)
+
+const BOT_COMMANDS = [
+  { command: "sessions", description: "Список сессий на этом ПК" },
+  { command: "open", description: "Открыть сессию по номеру: /open <N>" },
+  { command: "new", description: "Новая сессия: /new <имя> [путь]" },
+  { command: "status", description: "Статус диалога: модель, размер, прогрев" },
+  { command: "health", description: "Здоровье роутера: тёплые процессы + последние ходы" },
+  { command: "stop", description: "Прервать текущий ответ" },
+  { command: "restart", description: "Перезапустить роутер (применить обновления)" },
+  { command: "rename", description: "Переименовать этот топик: /rename <имя>" },
+  { command: "model", description: "Модель диалога: /model opus|sonnet|haiku" },
+  { command: "effort", description: "Эффорт: /effort low|medium|high|xhigh" },
+  { command: "list", description: "Активные диалоги" },
+  { command: "end", description: "Открепить и удалить этот топик" },
+];
+
+// Register the slash-command menu. In relay mode this tunnels through the relay to
+// the shared bot (every agent sets the same list — idempotent). Two scopes: default
+// + all_private_chats, the latter to overwrite stale commands an old plugin left in DMs.
+async function registerBotCommands(): Promise<void> {
+  for (const scope of [undefined, { type: "all_private_chats" }]) {
+    await tg
+      .setMyCommands(BOT_COMMANDS, scope)
+      .catch((e) => console.error("setMyCommands:", e instanceof Error ? e.message : e));
+  }
+}
 // Relay mode: connect to the shared relay BEFORE anything uses `tg` (its transport
 // dereferences `relay`), so the pendingRestart edit / inbox replay below can't
 // crash. connectRelay returns immediately; queued sends flush once the WS is up.
@@ -1211,6 +1237,9 @@ if (CONFIG.mode === "relay") {
     onUpdate: (u) => handleUpdate(u).catch((e) => console.error("handle", e)),
   });
   console.error(`router: relay mode → ${CONFIG.relayUrl}`);
+  // The relay doesn't own the command menu, so register it from here (buffered by
+  // the tunnel until the WS is up). Fire-and-forget so startup isn't blocked.
+  void registerBotCommands();
 }
 // If we just came back from a /restart, flip its "restarting…" message to ready.
 if (state.pendingRestart) {
@@ -1232,25 +1261,7 @@ if (state.inbox.length) {
 }
 if (CONFIG.mode !== "relay") {
   console.error(`router: polling as @${(await tg.getMe()).username}`);
-  const BOT_COMMANDS = [
-    { command: "sessions", description: "Список сессий на этом ПК" },
-    { command: "open", description: "Открыть сессию по номеру: /open <N>" },
-    { command: "new", description: "Новая сессия: /new <имя> [путь]" },
-    { command: "status", description: "Статус диалога: модель, размер, прогрев" },
-    { command: "health", description: "Здоровье роутера: тёплые процессы + последние ходы" },
-    { command: "stop", description: "Прервать текущий ответ" },
-    { command: "restart", description: "Перезапустить роутер (применить обновления)" },
-    { command: "rename", description: "Переименовать этот топик: /rename <имя>" },
-    { command: "model", description: "Модель диалога: /model opus|sonnet|haiku" },
-    { command: "effort", description: "Эффорт: /effort low|medium|high|xhigh" },
-    { command: "list", description: "Активные диалоги" },
-    { command: "end", description: "Открепить и удалить этот топик" },
-  ];
-  // Set at all_private_chats too — that scope is more specific than default and
-  // would otherwise shadow the menu in DMs (the old plugin left commands there).
-  for (const scope of [undefined, { type: "all_private_chats" }]) {
-    await tg.setMyCommands(BOT_COMMANDS, scope).catch((e) => console.error("setMyCommands:", e instanceof Error ? e.message : e));
-  }
+  await registerBotCommands();
   for (;;) {
     try {
       const updates = await tg.getUpdates(state.offset);
