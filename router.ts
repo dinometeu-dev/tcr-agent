@@ -182,7 +182,32 @@ function renderSessionsPage(list: SessRow[], page: number) {
 // Parameterized commands with a fixed set of choices (model, effort). Typing the
 // bare command shows these as tap-to-pick buttons instead of demanding an argument.
 const EFFORTS = ["low", "medium", "high", "xhigh"];
-const MODELS = ["opus", "sonnet", "haiku"];
+
+// Model picker: friendly label + the full --model id. Configurable via config
+// (`models`), else this current-lineup default. Generic aliases (opus/sonnet/
+// haiku/fable) and bare `claude-*` ids still work when typed; a model the
+// subscription doesn't grant just errors at run time, so trim the list to what
+// you actually have access to.
+type ModelChoice = { label: string; id: string };
+const DEFAULT_MODELS: ModelChoice[] = [
+  { label: "Opus 5", id: "claude-opus-5" },
+  { label: "Opus 4.8", id: "claude-opus-4-8" },
+  { label: "Sonnet 5", id: "claude-sonnet-5" },
+  { label: "Sonnet 4.5", id: "claude-sonnet-4-5" },
+  { label: "Haiku 4.5", id: "claude-haiku-4-5" },
+];
+const MODEL_CHOICES: ModelChoice[] = CONFIG.models && CONFIG.models.length ? CONFIG.models : DEFAULT_MODELS;
+
+// Resolve a typed /model argument to a full id: a configured label or id, a
+// generic alias, or a bare claude-* id. null = unrecognized.
+function resolveModel(x: string): string | null {
+  const s = x.trim().toLowerCase();
+  const hit = MODEL_CHOICES.find((m) => m.label.toLowerCase() === s || m.id.toLowerCase() === s);
+  if (hit) return hit.id;
+  if (["opus", "sonnet", "haiku", "fable"].includes(s)) return s;
+  if (s.startsWith("claude-")) return x.trim();
+  return null;
+}
 
 // Send a "pick a value" prompt: one inline button per option (2 per row), the
 // current value marked ✓. Tapping fires a `<prefix>:<thread>:<value>` callback.
@@ -191,15 +216,14 @@ async function sendChoiceMenu(
   thread: number,
   title: string,
   prefix: string,
-  options: string[],
-  current?: string,
+  options: { text: string; value: string; current?: boolean }[],
 ): Promise<void> {
   const rows: { text: string; callback_data: string }[][] = [];
   for (let i = 0; i < options.length; i += 2) {
     rows.push(
       options
         .slice(i, i + 2)
-        .map((o) => ({ text: o === current ? `✓ ${o}` : o, callback_data: `${prefix}:${thread}:${o}` })),
+        .map((o) => ({ text: o.current ? `✓ ${o.text}` : o.text, callback_data: `${prefix}:${thread}:${o.value}` })),
     );
   }
   await tg.sendRichMessage(chat_id, title, thread, { inline_keyboard: rows }).catch(() => {});
@@ -289,14 +313,30 @@ async function handleCallback(cb: any): Promise<void> {
   if (vm) {
     const kind = vm[1]!;
     const t = Number(vm[2]);
-    const value = vm[3]!;
-    const ok = kind === "eff" ? EFFORTS.includes(value) : MODELS.includes(value);
-    if (!ok || !state.topics[String(t)]) {
+    const raw = vm[3]!;
+    if (!state.topics[String(t)]) {
+      await tg.answerCallback(cb.id, "Топик не найден").catch(() => {});
+      return;
+    }
+    let value: string | null = null;
+    let label = "";
+    if (kind === "eff") {
+      if (EFFORTS.includes(raw)) {
+        value = raw;
+        label = `⚡ Эффорт: **${raw}**`;
+      }
+    } else {
+      const choice = MODEL_CHOICES[Number(raw)]; // model buttons carry the list index
+      if (choice) {
+        value = choice.id;
+        label = `🧩 Модель: **${choice.label}**`;
+      }
+    }
+    if (!value) {
       await tg.answerCallback(cb.id, "Не применилось — набери команду заново").catch(() => {});
       return;
     }
     applyTopicSetting(t, kind === "eff" ? "effort" : "model", value);
-    const label = kind === "eff" ? `⚡ Эффорт: **${value}**` : `🧩 Модель: **${value}**`;
     if (cb.message) {
       await tg
         .editRichMessage(cb.message.chat.id, cb.message.message_id, `${label} — применится со следующего сообщения ✅`)
@@ -988,16 +1028,27 @@ async function handleUpdate(u: any) {
       return;
     }
     if (!cmd.name) {
-      // Bare /model → tap-to-pick buttons instead of requiring an argument.
-      await sendChoiceMenu(chat_id, t, "🧩 Выберите модель:", "mdl", MODELS, state.topics[String(t)]!.model ?? CONFIG.defaultModel);
+      // Bare /model → tap-to-pick buttons (versioned models) instead of an argument.
+      const cur = state.topics[String(t)]!.model;
+      await sendChoiceMenu(
+        chat_id,
+        t,
+        "🧩 Выберите модель:",
+        "mdl",
+        MODEL_CHOICES.map((mm, i) => ({ text: mm.label, value: String(i), current: mm.id === cur })),
+      );
       return;
     }
-    if (!MODELS.includes(cmd.name)) {
-      await tg.sendMessage(chat_id, "Модель: /model opus | sonnet | haiku", t).catch(() => {});
+    const modelId = resolveModel(cmd.name);
+    if (!modelId) {
+      await tg
+        .sendMessage(chat_id, `Модель: ${MODEL_CHOICES.map((mm) => mm.label).join(" | ")} (или /model <claude-…>)`, t)
+        .catch(() => {});
       return;
     }
-    applyTopicSetting(t, "model", cmd.name);
-    await tg.sendMessage(chat_id, `🧩 Модель этого диалога: ${cmd.name} (применится со следующего сообщения)`, t);
+    applyTopicSetting(t, "model", modelId);
+    const modelLabel = MODEL_CHOICES.find((mm) => mm.id === modelId)?.label ?? modelId;
+    await tg.sendMessage(chat_id, `🧩 Модель этого диалога: ${modelLabel} (применится со следующего сообщения)`, t);
   } else if (cmd.kind === "effort") {
     const t = m.message_thread_id;
     if (!t || !state.topics[String(t)]) {
@@ -1006,7 +1057,14 @@ async function handleUpdate(u: any) {
     }
     if (!cmd.level) {
       // Bare /effort → tap-to-pick buttons.
-      await sendChoiceMenu(chat_id, t, "⚡ Выберите эффорт:", "eff", EFFORTS, state.topics[String(t)]!.effort ?? DEFAULT_EFFORT);
+      const cur = state.topics[String(t)]!.effort ?? DEFAULT_EFFORT;
+      await sendChoiceMenu(
+        chat_id,
+        t,
+        "⚡ Выберите эффорт:",
+        "eff",
+        EFFORTS.map((e) => ({ text: e, value: e, current: e === cur })),
+      );
       return;
     }
     if (!EFFORTS.includes(cmd.level)) {
@@ -1257,7 +1315,7 @@ const BOT_COMMANDS = [
   { command: "stop", description: "Прервать текущий ответ" },
   { command: "restart", description: "Перезапустить роутер (применить обновления)" },
   { command: "rename", description: "Переименовать этот топик: /rename <имя>" },
-  { command: "model", description: "Модель диалога: /model opus|sonnet|haiku" },
+  { command: "model", description: "Модель диалога: кнопки версий (Opus 5, Sonnet 5 …)" },
   { command: "effort", description: "Эффорт: /effort low|medium|high|xhigh" },
   { command: "list", description: "Активные диалоги" },
   { command: "end", description: "Открепить и удалить этот топик" },

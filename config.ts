@@ -20,6 +20,7 @@ export type Config = {
   voiceModel?: string; // whisper model for voice transcription (default "small")
   voiceLang?: string; // force a language for transcription (default "ru"; "" = auto-detect)
   forwardBatchMs?: number; // debounce window (ms) to coalesce a forward burst into one request (default 1500)
+  models?: { label: string; id: string }[]; // model picker for /model buttons (label shown, id → --model)
 };
 
 export function loadConfig(path: string = CONFIG_PATH): Config {
@@ -41,6 +42,11 @@ export function loadConfig(path: string = CONFIG_PATH): Config {
     voiceModel: r.voiceModel ? String(r.voiceModel) : undefined,
     voiceLang: typeof r.voiceLang === "string" ? r.voiceLang : undefined,
     forwardBatchMs: Number.isFinite(r.forwardBatchMs) ? Number(r.forwardBatchMs) : undefined,
+    models: Array.isArray(r.models)
+      ? r.models
+          .filter((m: any) => m && typeof m.label === "string" && typeof m.id === "string")
+          .map((m: any) => ({ label: String(m.label), id: String(m.id) }))
+      : undefined,
   };
 }
 
