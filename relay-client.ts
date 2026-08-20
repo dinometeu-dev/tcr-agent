@@ -4,6 +4,7 @@
 // Protocol: see the telegram-claude-relay project's DESIGN.md.
 import { readFileSync } from "fs";
 import type { Transport } from "./telegram";
+import { AGENT_VERSION } from "./version";
 
 type Pending = { resolve: (v: any) => void; reject: (e: any) => void };
 
@@ -42,7 +43,8 @@ export function connectRelay(opts: {
     ws = tlsOpt ? new WebSocket(opts.url, tlsOpt) : new WebSocket(opts.url);
     ws.onopen = () => {
       ready = false;
-      ws!.send(JSON.stringify({ t: "hello", agentId: opts.agentId, secret: opts.secret }));
+      // Report our version so the relay can log which agents run what (rollout visibility).
+      ws!.send(JSON.stringify({ t: "hello", agentId: opts.agentId, secret: opts.secret, version: AGENT_VERSION }));
     };
     ws.onmessage = (ev) => {
       lastRx = Date.now(); // any traffic = the link is alive
